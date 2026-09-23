@@ -1,7 +1,6 @@
 version: "3.9"
 
 services:
-
   redis:
     image: redis:7-alpine
     container_name: catalyx_redis
@@ -10,9 +9,7 @@ services:
       - "6379:6379"
 
   api:
-    build:
-      context: .
-      dockerfile: app/Dockerfile
+    build: ./app
     container_name: catalyx_api
     restart: unless-stopped
     env_file: .env

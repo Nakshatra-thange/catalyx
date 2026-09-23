@@ -5,13 +5,18 @@ from hybrid_search import search_hybrid
 from filtered_search import search_filtered
 from sqlalchemy.orm import Session
 from db import get_db
+from fastapi import HTTPException
+from schemas import SearchParams
+from pydantic import ValidationError
+from logging_middleware import RequestLoggingMiddleware
 import ingest
 import search_index
 from reranker import rerank
 import cache
 
-app = FastAPI(title="Catalyx", version="0.3.0")
 
+app = FastAPI(title="Catalyx", version="0.9.0")
+app.add_middleware(RequestLoggingMiddleware)
 
 @app.on_event("startup")
 def startup_event():
@@ -90,15 +95,26 @@ def search_hybrid_endpoint(q: str, top_k: int = 10, db: Session = Depends(get_db
     return {"query": q, "results": results}
 
 @app.get("/search")
-def search_endpoint(q: str, top_k: int = 10, db: Session = Depends(get_db)):
-    cached_response = cache.get_cached(q, top_k)
+def search_endpoint(
+    q: str,
+    page: int = 1,
+    page_size: int = 10,
+    db: Session = Depends(get_db),
+):
+    try:
+        params = SearchParams(q=q, page=page, page_size=page_size)
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=e.errors())
+
+    cache_key_top_k = params.page * params.page_size  # keeps cache keys stable per page
+    cached_response = cache.get_cached(f"{params.q}:p{params.page}", cache_key_top_k)
     if cached_response is not None:
         cached_response["cache_hit"] = True
         return cached_response
 
-    response = search_filtered(db, q, top_k=top_k)
+    response = search_filtered(db, params.q, page=params.page, page_size=params.page_size)
     response["results"] = rerank(response["results"])
     response["cache_hit"] = False
 
-    cache.set_cached(q, top_k, response)
+    cache.set_cached(f"{params.q}:p{params.page}", cache_key_top_k, response)
     return response

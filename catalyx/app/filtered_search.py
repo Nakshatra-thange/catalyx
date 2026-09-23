@@ -5,7 +5,6 @@ from vector_search import search_semantic
 from rrf import reciprocal_rank_fusion
 from query_parser import parse_query
 
-
 def _get_candidate_ids(db: Session, filters: dict) -> set[int] | None:
     """
     Pre-filtering: get the set of product IDs matching structured filters
@@ -38,39 +37,51 @@ def _get_candidate_ids(db: Session, filters: dict) -> set[int] | None:
     return {row.id for row in rows}
 
 
-def search_filtered(db: Session, raw_query: str, top_k: int = 10, candidate_pool: int = 30) -> dict:
+def search_filtered(
+    db: Session,
+    raw_query: str,
+    page: int = 1,
+    page_size: int = 10,
+    candidate_pool: int = 30,
+) -> dict:
     parsed = parse_query(raw_query)
     semantic_text = parsed["semantic_text"]
     filters = parsed["filters"]
 
     allowed_ids = _get_candidate_ids(db, filters)
 
+    # Fetch enough fused results to cover the requested page.
+    fetch_count = max(page * page_size, candidate_pool)
+
     bm25_index = search_index.get_index()
-    bm25_raw = bm25_index.search(semantic_text, top_k=candidate_pool * 3)
+    bm25_raw = bm25_index.search(semantic_text, top_k=fetch_count * 3)
     bm25_ids = [doc_id for doc_id, _ in bm25_raw]
     if allowed_ids is not None:
-        bm25_ids = [doc_id for doc_id in bm25_ids if doc_id in allowed_ids][:candidate_pool]
+        bm25_ids = [doc_id for doc_id in bm25_ids if doc_id in allowed_ids][:fetch_count]
     else:
-        bm25_ids = bm25_ids[:candidate_pool]
+        bm25_ids = bm25_ids[:fetch_count]
 
-    semantic_raw = search_semantic(db, semantic_text, top_k=candidate_pool * 3)
+    semantic_raw = search_semantic(db, semantic_text, top_k=fetch_count * 3)
     semantic_ids = [r["id"] for r in semantic_raw]
     if allowed_ids is not None:
-        semantic_ids = [pid for pid in semantic_ids if pid in allowed_ids][:candidate_pool]
+        semantic_ids = [pid for pid in semantic_ids if pid in allowed_ids][:fetch_count]
     else:
-        semantic_ids = semantic_ids[:candidate_pool]
+        semantic_ids = semantic_ids[:fetch_count]
 
     fused = reciprocal_rank_fusion([bm25_ids, semantic_ids])
-    top_ids = [doc_id for doc_id, _ in fused[:top_k]]
     fused_scores = {doc_id: score for doc_id, score in fused}
+    all_ids = [doc_id for doc_id, _ in fused]
+
+    start = (page - 1) * page_size
+    end = start + page_size
+    page_ids = all_ids[start:end]
 
     results = []
-    if top_ids:
+    if page_ids:
         rows = db.execute(
             text("SELECT id, title, price, category, brand, rating, stock FROM products WHERE id = ANY(:ids)"),
-            {"ids": top_ids}
+            {"ids": page_ids}
         ).fetchall()
-        
         row_map = {row.id: row for row in rows}
         results = [
             {
@@ -83,11 +94,15 @@ def search_filtered(db: Session, raw_query: str, top_k: int = 10, candidate_pool
                 "stock": row_map[pid].stock,
                 "rrf_score": round(fused_scores[pid], 5),
             }
-            for pid in top_ids if pid in row_map
+            for pid in page_ids if pid in row_map
         ]
+
     return {
         "query": raw_query,
         "parsed_semantic_text": semantic_text,
         "applied_filters": filters,
+        "page": page,
+        "page_size": page_size,
+        "total_candidates": len(all_ids),
         "results": results,
     }
