@@ -1,9 +1,14 @@
 from fastapi import FastAPI, Depends, BackgroundTasks
 from sqlalchemy import text
+from vector_search import search_semantic
+from hybrid_search import search_hybrid
+from filtered_search import search_filtered
 from sqlalchemy.orm import Session
 from db import get_db
 import ingest
 import search_index
+from reranker import rerank
+import cache
 
 app = FastAPI(title="Catalyx", version="0.3.0")
 
@@ -69,8 +74,31 @@ def search_keyword(q: str, top_k: int = 10, db: Session = Depends(get_db)):
 
     return {"query": q, "results": ordered}
 
+@app.get("/search/semantic")
+def search_semantic_endpoint(q: str, top_k: int = 10, db: Session = Depends(get_db)):
+    results = search_semantic(db, q, top_k=top_k)
+    return {"query": q, "results": results}
 
 @app.post("/search/reindex")
 def reindex():
     index = search_index.build_index()
     return {"status": "reindexed", "product_count": index.N}
+
+@app.get("/search/hybrid")
+def search_hybrid_endpoint(q: str, top_k: int = 10, db: Session = Depends(get_db)):
+    results = search_hybrid(db, q, top_k=top_k)
+    return {"query": q, "results": results}
+
+@app.get("/search")
+def search_endpoint(q: str, top_k: int = 10, db: Session = Depends(get_db)):
+    cached_response = cache.get_cached(q, top_k)
+    if cached_response is not None:
+        cached_response["cache_hit"] = True
+        return cached_response
+
+    response = search_filtered(db, q, top_k=top_k)
+    response["results"] = rerank(response["results"])
+    response["cache_hit"] = False
+
+    cache.set_cached(q, top_k, response)
+    return response
