@@ -1,30 +1,23 @@
 def recall_at_k(retrieved_ids: list[int], relevant_ids: set[int], k: int) -> float:
-    """
-    Recall@K = (relevant items found in top K results) / (total relevant items)
-
-    Measures: of everything that SHOULD have been found, how much did
-    we actually surface in the top K? Doesn't penalize ranking order
-    within the top K — only whether relevant items appear at all.
-    """
+    """Fraction of the complete relevance set retrieved in the first ``k``."""
     if not relevant_ids:
         return 0.0
-    top_k = set(retrieved_ids[:k])
-    found = top_k & relevant_ids
-    return len(found) / len(relevant_ids)
+    return len(set(retrieved_ids[:k]) & relevant_ids) / len(relevant_ids)
+
+
+def precision_at_k(retrieved_ids: list[int], relevant_ids: set[int], k: int) -> float:
+    """Fraction of the first ``k`` ranks occupied by relevant products.
+
+    The denominator is always ``k``. Missing results therefore count as
+    non-relevant positions, which keeps scores comparable across methods.
+    """
+    if k <= 0:
+        return 0.0
+    return len(set(retrieved_ids[:k]) & relevant_ids) / k
 
 
 def mean_reciprocal_rank(retrieved_ids: list[int], relevant_ids: set[int]) -> float:
-    """
-    Reciprocal Rank (for one query) = 1 / (rank of the FIRST relevant
-    result), or 0 if no relevant result appears at all.
-
-    MRR = average of reciprocal rank across all queries in the benchmark.
-
-    Measures: how quickly does the user see a relevant result? A system
-    that puts the first relevant item at rank 1 scores 1.0 for that
-    query; at rank 5 it scores 0.2. This penalizes making the user
-    scroll, unlike Recall@K which doesn't care about order.
-    """
+    """Reciprocal rank of the first relevant product (zero if none is found)."""
     for rank, doc_id in enumerate(retrieved_ids, start=1):
         if doc_id in relevant_ids:
             return 1.0 / rank
